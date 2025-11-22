@@ -122,7 +122,7 @@ https://yourdomain.com/admin
 - [🔧 Deployment Guide](docs/DEPLOYMENT_GUIDE.md) - Step-by-step production deployment
 - [🧪 Testing Guide](docs/TESTING_GUIDE.md) - Comprehensive testing checklist
 
-### For Users
+### For Users (loading ..)
 - [📱 Windows Uploader Guide](uploader/QUICKSTART.md) - How to create and upload your bot
 - [⚙️ Admin Panel Guide](docs/ADMIN_PANEL_GUIDE.md) - Using the admin dashboard
 - [🔒 Security Best Practices](docs/SECURITY.md) - Keeping your system secure
@@ -133,7 +133,7 @@ https://yourdomain.com/admin
 
 ---
 
-## 🖼️ Screenshots
+## 🖼️ Screenshots (loading)
 
 ### Admin Panel
 <details>
@@ -406,7 +406,7 @@ All require `Authorization: Bearer {token}` header.
 - `GET /api/admin/bots` - List all bots
 - `POST /api/admin/approve-bot` - Approve pending bot
 - `POST /api/admin/ban-user` - Ban user
-- More in [API Documentation](docs/API.md)
+- More in [API Documentation](docs/API.md) (soon)
 
 ---
 
@@ -447,7 +447,7 @@ npm test
 4. **JSON Storage** - Limits to ~500 bots comfortably
 5. **No Database** - All data in JSON files
 
-See [Issues](https://github.com/your-username/telegram-bot-system/issues) for planned improvements.
+See [Issues](https://github.com/nitpacker/tgfilebotter/issues) for planned improvements.
 
 ---
 
@@ -506,23 +506,23 @@ SOFTWARE.
 
 ---
 
-## 🙏 Acknowledgments
+## 👌 Acknowledgments
 
 - [node-telegram-bot-api](https://github.com/yagop/node-telegram-bot-api) - Telegram Bot API wrapper
 - [Express](https://expressjs.com/) - Web framework
 - [PyQt5](https://www.riverbankcomputing.com/software/pyqt/) - Python GUI framework
 - [Caddy](https://caddyserver.com/) - Automatic HTTPS web server
 - [CloudFlare](https://www.cloudflare.com/) - CDN and security
-
+- [Claude](https://www.claude.ai/) - Major code writing and reviewing
 ---
 
 ## 📞 Support & Contact
 
 ### Get Help
 - 📖 [Documentation](docs/)
-- 🐛 [Report Bug](https://github.com/your-username/telegram-bot-system/issues)
-- 💡 [Request Feature](https://github.com/your-username/telegram-bot-system/issues)
-- 💬 [Discussions](https://github.com/your-username/telegram-bot-system/discussions)
+- 🐛 [Report Bug](https://github.com/nitpacker/tgfilebotter/issues)
+- 💡 [Request Feature](https://github.com/nitpacker/tgfilebotter/issues)
+- 💬 [Discussions](https://github.com/nitpacker/tgfilebotter/discussions)
 
 ### Community
 - 🌟 Star this repo if you find it useful!
@@ -542,10 +542,10 @@ SOFTWARE.
 
 <div align="center">
 
-**Made with ❤️ by [Your Name](https://github.com/your-username)**
+**Made with ❤️ by [nitpacker](https://github.com/nitpacker)**
 
 **⭐ Star this repo if it helped you! ⭐**
 
-[Documentation](docs/) • [Issues](https://github.com/your-username/telegram-bot-system/issues) • [Pull Requests](https://github.com/your-username/telegram-bot-system/pulls)
+[Documentation](docs/) • [Issues](https://github.com/nitpacker/tgfilebotter/issues) • [Pull Requests](https://github.com/nitpacker/tgfilebotter/pulls)
 
 </div>
