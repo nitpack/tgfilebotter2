@@ -533,10 +533,10 @@ SOFTWARE.
 
 ## 📈 Stats
 
-![GitHub stars](https://img.shields.io/github/stars/your-username/telegram-bot-system?style=social)
-![GitHub forks](https://img.shields.io/github/forks/your-username/telegram-bot-system?style=social)
-![GitHub issues](https://img.shields.io/github/issues/your-username/telegram-bot-system)
-![GitHub pull requests](https://img.shields.io/github/issues-pr/your-username/telegram-bot-system)
+![GitHub stars](https://img.shields.io/github/stars/nitpacker/tgfilebotter?style=social)
+![GitHub forks](https://img.shields.io/github/forks/nitpacker/tgfilebotter?style=social)
+![GitHub issues](https://img.shields.io/github/issues/nitpacker/tgfilebotter)
+![GitHub pull requests](https://img.shields.io/github/issues-pr/nitpacker/tgfilebotter)
 
 ---
 
