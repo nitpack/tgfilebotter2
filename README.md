@@ -503,7 +503,8 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
-**The author of this repository is not responsible for any misuse of its code, including but not limited to: Hosting of illegal or copyrighted content!**
+**The author of this repository is not responsible for any misuse of its code, including but not limited to: Hosting of illegal or copyrighted content!
+The code was not written or reviewed by a professional. Expect all kinds of bugs including possible Telegram bans or limitations. The owner of this repository is not in any way responsible for how you use this code or what might happen as a direct or indirect consequense of that use!**
 
 ---
 
