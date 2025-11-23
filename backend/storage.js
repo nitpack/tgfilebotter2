@@ -1,4 +1,5 @@
 // storage.js - JSON File Storage Management (FIXED VERSION)
+// FIXES: Race conditions with atomic writes, operation backups, caching layer
 const fs = require('fs');
 const fsPromises = require('fs').promises;
 const path = require('path');
@@ -10,6 +11,13 @@ class Storage {
     this.botsDir = path.join(this.dataDir, 'bots');
     this.configDir = path.join(this.dataDir, 'config');
     this.backupsDir = path.join(this.dataDir, 'backups');
+    
+    // FIXED: Add write queue for atomic operations
+    this.writeQueue = new Map(); // botId -> Promise
+    
+    // FIXED: Add caching layer
+    this.botCache = new Map(); // botId -> { data, timestamp }
+    this.CACHE_TTL = 60000; // 1 minute
     
     this.initializeDirectories();
   }
@@ -24,6 +32,59 @@ class Storage {
     } catch (error) {
       console.error('Error initializing directories:', error);
       throw error;
+    }
+  }
+
+  // FIXED: Atomic bot status update (prevents race conditions)
+  async updateBotStatusAtomic(botId, status) {
+    // Wait for any pending writes to complete
+    if (this.writeQueue.has(botId)) {
+      await this.writeQueue.get(botId);
+    }
+    
+    // Create new write promise
+    const writePromise = (async () => {
+      try {
+        const bot = this.getBotById(botId, false); // Don't use cache
+        if (!bot) return false;
+        
+        bot.status = status;
+        bot.statusChangedAt = new Date().toISOString();
+        
+        await this.saveBot(bot);
+        this.clearCache(botId); // Invalidate cache
+        return true;
+      } finally {
+        this.writeQueue.delete(botId);
+      }
+    })();
+    
+    this.writeQueue.set(botId, writePromise);
+    return await writePromise;
+  }
+
+  // FIXED: Create operation backup before destructive actions
+  async createOperationBackup(operation, data) {
+    try {
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const backupPath = path.join(
+        this.backupsDir, 
+        `operation_${operation}_${timestamp}.json`
+      );
+      
+      await fsPromises.writeFile(
+        backupPath,
+        JSON.stringify({
+          operation,
+          timestamp,
+          data
+        }, null, 2)
+      );
+      
+      return true;
+    } catch (error) {
+      console.error('Failed to create operation backup:', error);
+      return false;
     }
   }
 
@@ -46,6 +107,7 @@ class Storage {
     const filePath = path.join(this.botsDir, `bot_${bot.id}.json`);
     try {
       fs.writeFileSync(filePath, JSON.stringify(bot, null, 2), 'utf8');
+      this.clearCache(bot.id); // Invalidate cache
     } catch (err) {
       console.error(`Error saving bot ${bot.id}:`, err);
     }
@@ -54,30 +116,45 @@ class Storage {
   async saveBot(bot) {
     const filePath = path.join(this.botsDir, `bot_${bot.id}.json`);
     await fsPromises.writeFile(filePath, JSON.stringify(bot, null, 2), 'utf8');
+    this.clearCache(bot.id); // Invalidate cache
   }
 
-  // FIXED: Use fs.readFileSync instead of require() to avoid caching
-  getBotById(botId) {
+  // FIXED: Added caching with proper invalidation
+  getBotById(botId, useCache = true) {
+    // Check cache first
+    if (useCache) {
+      const cached = this.botCache.get(botId);
+      if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
+        return cached.data;
+      }
+    }
+
     try {
       const filePath = path.join(this.botsDir, `bot_${botId}.json`);
       if (!fs.existsSync(filePath)) {
         return null;
       }
       const data = fs.readFileSync(filePath, 'utf8');
-      return JSON.parse(data);
+      const bot = JSON.parse(data);
+      
+      // Update cache
+      this.botCache.set(botId, {
+        data: bot,
+        timestamp: Date.now()
+      });
+      
+      return bot;
     } catch (error) {
       console.error(`Error reading bot ${botId}:`, error);
       return null;
     }
   }
 
-  // FIXED: Use fs.readFileSync instead of require() to avoid caching
   getBotByToken(token) {
     const allBots = this.getAllBots();
     return allBots.find(bot => bot.botToken === token);
   }
 
-  // FIXED: Use fs.readFileSync instead of require() to avoid caching
   getAllBots() {
     try {
       if (!fs.existsSync(this.botsDir)) {
@@ -122,7 +199,7 @@ class Storage {
   }
 
   updateBotStatus(botId, status) {
-    const bot = this.getBotById(botId);
+    const bot = this.getBotById(botId, false); // Don't use cache
     if (!bot) return false;
 
     bot.status = status;
@@ -133,7 +210,7 @@ class Storage {
   }
 
   registerBotOwner(botId, ownerId) {
-    const bot = this.getBotById(botId);
+    const bot = this.getBotById(botId, false); // Don't use cache
     if (!bot) return false;
 
     bot.ownerId = ownerId;
@@ -147,6 +224,7 @@ class Storage {
     try {
       const filePath = path.join(this.botsDir, `bot_${botId}.json`);
       await fsPromises.unlink(filePath);
+      this.clearCache(botId); // Clear from cache
       return true;
     } catch (error) {
       console.error(`Error deleting bot ${botId}:`, error);
@@ -157,6 +235,15 @@ class Storage {
   getBotsByOwner(ownerId) {
     const allBots = this.getAllBots();
     return allBots.filter(bot => bot.ownerId === ownerId);
+  }
+
+  // Cache management
+  clearCache(botId = null) {
+    if (botId) {
+      this.botCache.delete(botId);
+    } else {
+      this.botCache.clear();
+    }
   }
 
   // Change detection for updates

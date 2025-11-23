@@ -1,7 +1,10 @@
-// admin-routes.js - Admin Panel API Routes
+// admin-routes.js - Admin Panel API Routes (FIXED VERSION)
+// FIXES: Session persistence, input validation, missing approve endpoint, operation backups
 const express = require('express');
 const crypto = require('crypto');
 const { body, validationResult } = require('express-validator');
+const fs = require('fs').promises;
+const path = require('path');
 
 class AdminRoutes {
   constructor(storage, config, botManager, adminBot, security) {
@@ -12,17 +15,53 @@ class AdminRoutes {
     this.adminBot = adminBot;
     this.security = security;
     
-    // Session storage (in-memory for now)
+    // Session storage with persistence
     this.sessions = new Map();
     this.failedLogins = new Map();
+    this.sessionFile = path.join(__dirname, '..', 'data', 'config', 'sessions.json');
     
-    // Admin credentials (should be in config, but hardcoded for initial setup)
+    // Admin credentials (should be from environment)
     this.adminCredentials = {
       username: process.env.ADMIN_USERNAME || 'admin',
       password: this.hashPassword(process.env.ADMIN_PASSWORD || 'admin123')
     };
     
+    // Load existing sessions on startup
+    this.loadSessions().catch(err => console.error('Failed to load sessions:', err));
+    
     this.setupRoutes();
+  }
+
+  async loadSessions() {
+    try {
+      const data = await fs.readFile(this.sessionFile, 'utf8');
+      const sessions = JSON.parse(data);
+      const now = Date.now();
+      
+      // Restore non-expired sessions
+      for (const [token, session] of Object.entries(sessions)) {
+        if (session.expires > now) {
+          this.sessions.set(token, session);
+        }
+      }
+      console.log(`✓ Restored ${this.sessions.size} active admin sessions`);
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        console.error('Error loading sessions:', error);
+      }
+    }
+  }
+
+  async saveSessions() {
+    try {
+      const sessions = {};
+      for (const [token, session] of this.sessions.entries()) {
+        sessions[token] = session;
+      }
+      await fs.writeFile(this.sessionFile, JSON.stringify(sessions, null, 2));
+    } catch (error) {
+      console.error('Error saving sessions:', error);
+    }
   }
 
   hashPassword(password) {
@@ -46,11 +85,13 @@ class AdminRoutes {
     
     if (!session || Date.now() > session.expires) {
       this.sessions.delete(token);
+      this.saveSessions(); // Persist deletion
       return res.status(401).json({ success: false, error: 'Session expired' });
     }
     
     // Extend session
     session.expires = Date.now() + 30 * 60 * 1000; // 30 minutes
+    this.saveSessions(); // Persist extension
     req.adminSession = session;
     next();
   }
@@ -80,13 +121,24 @@ class AdminRoutes {
         const { username, password } = req.body;
         const ip = req.ip;
         
-        if (!username || !password) {
-          return res.status(400).json({ success: false, error: 'Missing credentials' });
+        // FIXED: Input validation
+        if (!username || typeof username !== 'string' || username.length > 100) {
+          return res.status(400).json({ success: false, error: 'Invalid username' });
+        }
+        
+        if (!password || typeof password !== 'string' || password.length > 1000) {
+          return res.status(400).json({ success: false, error: 'Invalid password' });
+        }
+        
+        // Sanitize username (but not password - may contain special chars)
+        const cleanUsername = this.security.sanitizeInput(username);
+        if (!cleanUsername) {
+          return res.status(400).json({ success: false, error: 'Invalid username format' });
         }
         
         const hashedPassword = this.hashPassword(password);
         
-        if (username === this.adminCredentials.username && 
+        if (cleanUsername === this.adminCredentials.username && 
             hashedPassword === this.adminCredentials.password) {
           
           // Clear failed attempts
@@ -96,12 +148,13 @@ class AdminRoutes {
           const token = this.generateToken();
           const session = {
             token,
-            username,
+            username: cleanUsername,
             created: Date.now(),
             expires: Date.now() + 30 * 60 * 1000 // 30 minutes
           };
           
           this.sessions.set(token, session);
+          await this.saveSessions(); // FIXED: Persist to disk
           
           await this.adminBot.sendAlert('system', `Admin logged in from IP: ${ip}`);
           
@@ -134,6 +187,18 @@ class AdminRoutes {
       res.json({ success: true });
     });
 
+    // Logout endpoint (clear session)
+    this.router.post('/logout', auth, async (req, res) => {
+      try {
+        const token = req.headers.authorization.substring(7);
+        this.sessions.delete(token);
+        await this.saveSessions();
+        res.json({ success: true, message: 'Logged out successfully' });
+      } catch (error) {
+        res.status(500).json({ success: false, error: 'Logout failed' });
+      }
+    });
+
     // Get statistics
     this.router.get('/stats', auth, async (req, res) => {
       try {
@@ -159,8 +224,6 @@ class AdminRoutes {
     // Get recent activity
     this.router.get('/activity', auth, async (req, res) => {
       try {
-        // This would normally come from a log file
-        // For now, return recent bots
         const allBots = this.storage.getAllBots();
         const recent = allBots
           .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
@@ -213,6 +276,74 @@ class AdminRoutes {
       }
     });
 
+    // FIXED: NEW - Approve bot endpoint
+    this.router.post('/approve-bot', auth, async (req, res) => {
+      try {
+        const { botId } = req.body;
+        
+        if (!botId) {
+          return res.status(400).json({ success: false, error: 'Bot ID required' });
+        }
+        
+        const bot = this.storage.getBotById(botId);
+        
+        if (!bot) {
+          return res.status(404).json({ success: false, error: 'Bot not found' });
+        }
+        
+        if (bot.status === 'approved') {
+          return res.json({ success: true, message: 'Bot already approved' });
+        }
+        
+        // Create backup of operation
+        await this.storage.createOperationBackup('approve_bot', {
+          botId,
+          botUsername: bot.botUsername,
+          previousStatus: bot.status,
+          timestamp: new Date().toISOString(),
+          approvedBy: req.adminSession.username
+        });
+        
+        // Update status to approved
+        const success = await this.storage.updateBotStatusAtomic(botId, 'approved');
+        
+        if (success) {
+          await this.adminBot.sendAlert('approval', 
+            `Bot ${bot.botUsername} has been approved!\n` +
+            `Bot ID: ${botId}\n` +
+            `Owner: ${bot.ownerId || 'Not registered'}`
+          );
+          
+          // Notify bot owner if registered
+          if (bot.ownerId) {
+            try {
+              await this.botManager.sendAdminMessage(
+                botId,
+                bot.ownerId,
+                '🎉 Your bot has been approved! It is now public and available to all users.'
+              );
+            } catch (error) {
+              console.error('Failed to notify bot owner:', error);
+            }
+          }
+          
+          return res.json({ 
+            success: true,
+            message: 'Bot approved successfully'
+          });
+        } else {
+          return res.status(500).json({ 
+            success: false, 
+            error: 'Failed to update bot status' 
+          });
+        }
+        
+      } catch (error) {
+        console.error('Approve bot error:', error);
+        res.status(500).json({ success: false, error: 'Failed to approve bot' });
+      }
+    });
+
     // Disconnect bot
     this.router.post('/disconnect-bot', auth, async (req, res) => {
       try {
@@ -222,7 +353,22 @@ class AdminRoutes {
           return res.status(400).json({ success: false, error: 'Bot ID required' });
         }
         
-        const success = this.storage.updateBotStatus(botId, 'disconnected');
+        const bot = this.storage.getBotById(botId);
+        
+        if (!bot) {
+          return res.status(404).json({ success: false, error: 'Bot not found' });
+        }
+        
+        // Create backup of operation
+        await this.storage.createOperationBackup('disconnect_bot', {
+          botId,
+          botUsername: bot.botUsername,
+          previousStatus: bot.status,
+          timestamp: new Date().toISOString(),
+          disconnectedBy: req.adminSession.username
+        });
+        
+        const success = await this.storage.updateBotStatusAtomic(botId, 'disconnected');
         
         if (success) {
           await this.adminBot.sendAlert('moderation', `Bot ${botId} has been disconnected`);
@@ -246,13 +392,28 @@ class AdminRoutes {
           return res.status(400).json({ success: false, error: 'User ID required' });
         }
         
+        // Get user's bots before banning (for backup)
+        const userBots = this.storage.getBotsByOwner(userId);
+        
+        // FIXED: Create backup of operation
+        await this.storage.createOperationBackup('ban_user', {
+          userId,
+          reason: reason || 'No reason provided',
+          timestamp: new Date().toISOString(),
+          bannedBy: req.adminSession.username,
+          botsAffected: userBots.map(b => ({
+            id: b.id,
+            botUsername: b.botUsername,
+            status: b.status
+          }))
+        });
+        
         // Add to banned list
         await this.storage.addBannedUser(userId, reason || 'No reason provided');
         
         // Disconnect all bots owned by this user
-        const userBots = this.storage.getBotsByOwner(userId);
         for (const bot of userBots) {
-          this.storage.updateBotStatus(bot.id, 'disconnected');
+          await this.storage.updateBotStatusAtomic(bot.id, 'disconnected');
           await this.botManager.stopBot(bot.id);
         }
         
@@ -287,6 +448,13 @@ class AdminRoutes {
         if (!userId) {
           return res.status(400).json({ success: false, error: 'User ID required' });
         }
+        
+        // Create backup of operation
+        await this.storage.createOperationBackup('unban_user', {
+          userId,
+          timestamp: new Date().toISOString(),
+          unbannedBy: req.adminSession.username
+        });
         
         // Remove from banned list
         const config = await this.storage.loadConfig('banned_users') || { users: [] };
@@ -415,8 +583,6 @@ class AdminRoutes {
     // Security log (placeholder - would come from actual logging system)
     this.router.get('/security-log', auth, async (req, res) => {
       try {
-        // This would normally read from a security log file
-        // For now, return empty array
         res.json({ success: true, events: [] });
       } catch (error) {
         res.json({ success: true, events: [] });
@@ -443,18 +609,17 @@ class AdminRoutes {
     // Get backup history
     this.router.get('/backups', auth, async (req, res) => {
       try {
-        const fs = require('fs').promises;
-        const path = require('path');
+        const fsSync = require('fs');
         const backupsDir = path.join(__dirname, '..', 'data', 'backups');
         
-        const dirs = await fs.readdir(backupsDir);
+        const dirs = fsSync.readdirSync(backupsDir);
         const backups = [];
         
         for (const dir of dirs) {
           if (dir.startsWith('backup_')) {
             try {
               const manifestPath = path.join(backupsDir, dir, 'manifest.json');
-              const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+              const manifest = JSON.parse(fsSync.readFileSync(manifestPath, 'utf8'));
               backups.push(manifest);
             } catch (e) {
               // Skip invalid backups

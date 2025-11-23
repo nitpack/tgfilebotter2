@@ -1,4 +1,5 @@
-// bot-manager.js - Manages Multiple Telegram Bots
+// bot-manager.js - Manages Multiple Telegram Bots (FIXED VERSION)
+// FIXES: Error isolation, bot recovery mechanism, proper error handling
 const TelegramBot = require('node-telegram-bot-api');
 const Security = require('./security');
 
@@ -10,6 +11,9 @@ class BotManager {
     this.security = new Security();
     this.bots = new Map(); // botId -> bot instance
     this.botTokenMap = new Map(); // token -> botId
+    
+    // FIXED: Add recovery monitoring
+    this.recoveryInterval = null;
   }
 
   async loadAllBots() {
@@ -31,16 +35,36 @@ class BotManager {
       }
 
       console.log(`✓ Loaded ${this.bots.size} active bots`);
+      
+      // Start recovery monitor
+      this.startRecoveryMonitor();
+      
     } catch (error) {
       console.error('Error loading bots:', error);
       throw error;
     }
   }
 
+  // FIXED: Improved error handling with isolation
   async addBot(botId, token, channelId, metadata, status = 'pending', ownerId = null) {
     try {
-      // Create bot instance
-      const bot = new TelegramBot(token, { polling: true });
+      // Create bot instance with error handling
+      const bot = new TelegramBot(token, { 
+        polling: {
+          interval: 300,
+          autoStart: true,
+          params: {
+            timeout: 10
+          }
+        }
+      });
+      
+      // Test bot connection before adding
+      try {
+        await bot.getMe();
+      } catch (error) {
+        throw new Error(`Bot token invalid or revoked: ${error.message}`);
+      }
       
       // Store bot info
       const botInfo = {
@@ -51,22 +75,26 @@ class BotManager {
         metadata,
         status,
         ownerId,
-        started: new Date().toISOString()
+        started: new Date().toISOString(),
+        errors: [], // Track errors per bot
+        lastHealthCheck: Date.now()
       };
 
       this.bots.set(botId, botInfo);
       this.botTokenMap.set(token, botId);
 
-      // Setup handlers
+      // Setup handlers with error isolation
       this.setupBotHandlers(botInfo);
 
       console.log(`✓ Bot ${botId} initialized (status: ${status})`);
       return botId;
 
     } catch (error) {
-      console.error(`Error adding bot ${botId}:`, error);
+      console.error(`❌ Error adding bot ${botId}:`, error);
       await this.adminBot.sendAlert('error', `Failed to initialize bot ${botId}: ${error.message}`);
-      throw error;
+      
+      // Don't throw - log and continue with other bots
+      return null;
     }
   }
 
@@ -74,19 +102,39 @@ class BotManager {
     const { instance: bot, botId, channelId, metadata, status, ownerId } = botInfo;
     const adminUserId = this.config.getAdminUserId();
 
-    // Handle /start command
-    bot.onText(/\/start/, async (msg) => {
-      const userId = msg.from.id;
-      const chatId = msg.chat.id;
-
-      // Sanitize message
-      const sanitizedMsg = this.security.sanitizeTelegramMessage(msg);
-      if (!sanitizedMsg) {
-        await this.adminBot.sendAlert('security', `Malicious message blocked from user ${userId} in bot ${botId}`);
-        return;
+    // FIXED: Add error handler to prevent crashes
+    bot.on('polling_error', (error) => {
+      console.error(`Polling error for bot ${botId}:`, error);
+      
+      // Track errors
+      if (!botInfo.errors) botInfo.errors = [];
+      botInfo.errors.push({
+        timestamp: new Date().toISOString(),
+        error: error.message,
+        type: 'polling'
+      });
+      
+      // If too many errors, stop bot
+      if (botInfo.errors.length > 10) {
+        console.error(`Bot ${botId} has too many errors, stopping...`);
+        this.stopBot(botId).catch(console.error);
+        this.adminBot.sendAlert('error', `Bot ${botId} stopped due to repeated errors`).catch(console.error);
       }
+    });
 
+    // Handle /start command with error isolation
+    bot.onText(/\/start/, async (msg) => {
       try {
+        const userId = msg.from.id;
+        const chatId = msg.chat.id;
+
+        // Sanitize message
+        const sanitizedMsg = this.security.sanitizeTelegramMessage(msg);
+        if (!sanitizedMsg) {
+          await this.adminBot.sendAlert('security', `Malicious message blocked from user ${userId} in bot ${botId}`);
+          return;
+        }
+
         // Check bot status and user permissions
         if (status === 'pending') {
           // Only admin can interact with pending bots
@@ -111,64 +159,71 @@ class BotManager {
 
         // Show main menu (root folders)
         await this.sendFolderMenu(bot, chatId, metadata, []);
-
+        
       } catch (error) {
         console.error(`Error handling /start for bot ${botId}:`, error);
+        // Don't crash - just log the error
       }
     });
 
-    // Handle text messages (for owner registration)
+    // Handle text messages (for owner registration) with error isolation
     bot.on('message', async (msg) => {
-      // Skip if it's a command
-      if (msg.text && msg.text.startsWith('/')) return;
+      try {
+        // Skip if it's a command
+        if (msg.text && msg.text.startsWith('/')) return;
 
-      const userId = msg.from.id;
-      const chatId = msg.chat.id;
-      const text = msg.text || '';
+        const userId = msg.from.id;
+        const chatId = msg.chat.id;
+        const text = msg.text || '';
 
-      // Sanitize message
-      const sanitizedMsg = this.security.sanitizeTelegramMessage(msg);
-      if (!sanitizedMsg) {
-        await this.adminBot.sendAlert('security', `Malicious message blocked from user ${userId} in bot ${botId}`);
-        return;
+        // Sanitize message
+        const sanitizedMsg = this.security.sanitizeTelegramMessage(msg);
+        if (!sanitizedMsg) {
+          await this.adminBot.sendAlert('security', `Malicious message blocked from user ${userId} in bot ${botId}`);
+          return;
+        }
+
+        // Check if this is owner registration
+        if (!ownerId && text.toLowerCase().includes('register')) {
+          // Register bot owner
+          this.storage.registerBotOwner(botId, userId);
+          botInfo.ownerId = userId;
+
+          await bot.sendMessage(chatId, 
+            '✅ Registration successful! Your bot has been submitted for review.\n\nYou will be notified once approved.'
+          );
+
+          await this.adminBot.sendAlert('registration', 
+            `Bot ${botId} owner registered\nUser ID: ${userId}\nBot needs approval`
+          );
+
+          return;
+        }
+
+        // For other text messages, send invalid input message
+        const invalidMsg = this.config.getInvalidInputMessage();
+        await bot.sendMessage(chatId, invalidMsg);
+        
+      } catch (error) {
+        console.error(`Error handling message for bot ${botId}:`, error);
+        // Don't crash - just log the error
       }
-
-      // Check if this is owner registration
-      if (!ownerId && text.toLowerCase().includes('register')) {
-        // Register bot owner
-        this.storage.registerBotOwner(botId, userId);
-        botInfo.ownerId = userId;
-
-        await bot.sendMessage(chatId, 
-          '✅ Registration successful! Your bot has been submitted for review.\n\nYou will be notified once approved.'
-        );
-
-        await this.adminBot.sendAlert('registration', 
-          `Bot ${botId} owner registered\nUser ID: ${userId}\nBot needs approval`
-        );
-
-        return;
-      }
-
-      // For other text messages, send invalid input message
-      const invalidMsg = this.config.getInvalidInputMessage();
-      await bot.sendMessage(chatId, invalidMsg);
     });
 
-    // Handle inline keyboard callbacks
+    // Handle inline keyboard callbacks with error isolation
     bot.on('callback_query', async (query) => {
-      const userId = query.from.id;
-      const chatId = query.message.chat.id;
-      const data = query.data;
-
-      // Sanitize callback data
-      const sanitizedData = this.security.sanitizeInput(data);
-      if (!sanitizedData) {
-        await this.adminBot.sendAlert('security', `Malicious callback blocked from user ${userId} in bot ${botId}`);
-        return;
-      }
-
       try {
+        const userId = query.from.id;
+        const chatId = query.message.chat.id;
+        const data = query.data;
+
+        // Sanitize callback data
+        const sanitizedData = this.security.sanitizeInput(data);
+        if (!sanitizedData) {
+          await this.adminBot.sendAlert('security', `Malicious callback blocked from user ${userId} in bot ${botId}`);
+          return;
+        }
+
         // Check bot status
         if (status === 'pending' && userId !== adminUserId) {
           await bot.answerCallbackQuery(query.id);
@@ -201,17 +256,16 @@ class BotManager {
           await this.sendFolderMenu(bot, chatId, metadata, currentPath, pageNum);
           await bot.answerCallbackQuery(query.id);
         }
-
+        
       } catch (error) {
         console.error(`Error handling callback for bot ${botId}:`, error);
-        await bot.answerCallbackQuery(query.id, { text: 'Error processing request' });
+        try {
+          await bot.answerCallbackQuery(query.id, { text: 'Error processing request' });
+        } catch (e) {
+          // Even answering callback failed, just log
+          console.error('Failed to answer callback query:', e);
+        }
       }
-    });
-
-    // Error handling
-    bot.on('polling_error', (error) => {
-      console.error(`Polling error for bot ${botId}:`, error);
-      this.adminBot.sendAlert('error', `Polling error in bot ${botId}: ${error.message}`).catch(console.error);
     });
   }
 
@@ -312,7 +366,12 @@ class BotManager {
 
     } catch (error) {
       console.error('Error sending folder menu:', error);
-      await bot.sendMessage(chatId, '❌ Error loading folder menu.');
+      try {
+        await bot.sendMessage(chatId, '❌ Error loading folder menu.');
+      } catch (e) {
+        // Failed to send error message too
+        console.error('Failed to send error message:', e);
+      }
     }
   }
 
@@ -337,10 +396,75 @@ class BotManager {
     }
   }
 
+  // FIXED: Add recovery monitoring
+  startRecoveryMonitor() {
+    // Check every 5 minutes for failed bots
+    this.recoveryInterval = setInterval(async () => {
+      for (const [botId, botInfo] of this.bots.entries()) {
+        try {
+          // Check if bot is still responsive
+          const me = await botInfo.instance.getMe();
+          
+          // Reset error count on success
+          if (botInfo.errors) {
+            botInfo.errors = [];
+          }
+          
+          botInfo.lastHealthCheck = Date.now();
+          
+        } catch (error) {
+          console.error(`Bot ${botId} health check failed:`, error);
+          
+          // Track failure
+          if (!botInfo.errors) botInfo.errors = [];
+          botInfo.errors.push({
+            timestamp: new Date().toISOString(),
+            error: error.message,
+            type: 'health_check'
+          });
+
+          // If failed multiple times, attempt restart
+          if (botInfo.errors.length >= 3) {
+            console.log(`Attempting to restart bot ${botId}...`);
+            
+            try {
+              await this.stopBot(botId);
+              
+              const bot = this.storage.getBotById(botId);
+              if (bot && bot.status === 'approved') {
+                await this.addBot(
+                  botId,
+                  bot.botToken,
+                  bot.channelId,
+                  bot.metadata,
+                  bot.status,
+                  bot.ownerId
+                );
+                
+                await this.adminBot.sendAlert('recovery', 
+                  `Bot ${botId} was automatically restarted after health check failure`
+                );
+              }
+            } catch (restartError) {
+              console.error(`Failed to restart bot ${botId}:`, restartError);
+              await this.adminBot.sendAlert('error',
+                `Failed to auto-restart bot ${botId}: ${restartError.message}`
+              );
+            }
+          }
+        }
+      }
+    }, 5 * 60 * 1000); // Every 5 minutes
+  }
+
   async stopBot(botId) {
     const botInfo = this.bots.get(botId);
     if (botInfo) {
-      await botInfo.instance.stopPolling();
+      try {
+        await botInfo.instance.stopPolling();
+      } catch (error) {
+        console.error(`Error stopping bot ${botId}:`, error);
+      }
       this.bots.delete(botId);
       this.botTokenMap.delete(botInfo.token);
       console.log(`✓ Bot ${botId} stopped`);
@@ -348,6 +472,11 @@ class BotManager {
   }
 
   async stopAllBots() {
+    // Clear recovery interval
+    if (this.recoveryInterval) {
+      clearInterval(this.recoveryInterval);
+    }
+    
     console.log('Stopping all bots...');
     for (const [botId, botInfo] of this.bots.entries()) {
       try {
