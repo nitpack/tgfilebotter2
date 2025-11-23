@@ -143,6 +143,11 @@ DATA_DIR=$DATA_DIR
 LOG_DIR=$APP_DIR/logs
 EOF
 
+SALT=$(openssl rand -hex 32)
+cat >> "$APP_DIR/.env" << EOF
+PASSWORD_SALT=$SALT
+EOF
+
 chmod 600 "$APP_DIR/.env"
 echo -e "${GREEN}✓ Environment file created${NC}"
 
