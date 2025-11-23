@@ -1,4 +1,4 @@
-// server.js - Main Backend Server Entry Point (SECURITY HARDENED)
+// server.js - Main Backend Server Entry Point (PRODUCTION-READY WITH ALL FIXES)
 const express = require('express');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
@@ -32,7 +32,7 @@ app.use(helmet({
     directives: {
       defaultSrc: ["'self'"],
       scriptSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'"], // Allow inline styles for admin panel
+      styleSrc: ["'self'", "'unsafe-inline'"],
       imgSrc: ["'self'", "data:"],
       connectSrc: ["'self'"],
       fontSrc: ["'self'"],
@@ -48,34 +48,29 @@ app.use(helmet({
   }
 }));
 
-// Trust proxy (needed for accurate IP detection behind Caddy)
+// Trust proxy
 app.set('trust proxy', 1);
 
-// SECURITY FIX: Add request size limits with DoS protection
+// Request size limits with DoS protection
 app.use(express.json({ 
   limit: '15mb',
   verify: (req, res, buf, encoding) => {
     try {
       const body = buf.toString(encoding || 'utf8');
-      
-      // Check for extremely deep nesting (DoS attack)
       const depth = (body.match(/{/g) || []).length;
       if (depth > 100) {
         throw new Error('JSON too deeply nested');
       }
-      
-      // Check for extremely long strings (DoS attack)
       if (/"[^"]{100000,}"/.test(body)) {
         throw new Error('JSON contains extremely long strings');
       }
     } catch (error) {
-      // Let express handle the error
       throw error;
     }
   }
 }));
 
-// Serve static files from public folder
+// Serve static files
 app.use(express.static(path.join(__dirname, 'public'), {
   maxAge: '1d',
   etag: true
@@ -97,7 +92,7 @@ const globalLimiter = rateLimit({
   }
 });
 
-// Rate limiting - Upload endpoint (stricter)
+// Rate limiting - Upload endpoint
 const uploadLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 10,
@@ -112,7 +107,7 @@ const uploadLimiter = rateLimit({
   }
 });
 
-// SECURITY FIX: Rate limit metadata endpoint
+// MAJOR FIX #6: Rate limit metadata endpoint
 const metadataLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 30,
@@ -122,11 +117,7 @@ const metadataLimiter = rateLimit({
 
 app.use(globalLimiter);
 
-// ============================================================
 // PUBLIC ROUTES
-// ============================================================
-
-// Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 
@@ -135,13 +126,21 @@ app.get('/health', (req, res) => {
   });
 });
 
-// SECURITY FIX: Add detailed health check with authentication
+// MAJOR FIX #9: Detailed health check with authentication
 app.get('/api/health/detailed', async (req, res) => {
-  // Simple token-based auth for health check
   const token = req.query.token;
-  const expectedToken = process.env.HEALTH_CHECK_TOKEN || crypto.randomBytes(16).toString('hex');
   
-  if (token !== expectedToken) {
+  // SECURITY FIX: Generate token on first startup or use env variable
+  if (!global.HEALTH_CHECK_TOKEN) {
+    global.HEALTH_CHECK_TOKEN = process.env.HEALTH_CHECK_TOKEN || 
+      crypto.randomBytes(16).toString('hex');
+    if (!process.env.HEALTH_CHECK_TOKEN) {
+      console.log(`⚠ Generated health check token: ${global.HEALTH_CHECK_TOKEN}`);
+      console.log('  Set HEALTH_CHECK_TOKEN in .env for persistent access');
+    }
+  }
+  
+  if (token !== global.HEALTH_CHECK_TOKEN) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   
@@ -153,13 +152,11 @@ app.get('/api/health/detailed', async (req, res) => {
   };
 
   try {
-    // Check bot manager
     health.checks.botManager = {
       status: botManager.getActiveBotCount() >= 0 ? 'ok' : 'error',
       activeBots: botManager.getActiveBotCount()
     };
 
-    // Check storage
     try {
       const bots = storage.getAllBots();
       health.checks.storage = {
@@ -174,12 +171,10 @@ app.get('/api/health/detailed', async (req, res) => {
       health.status = 'degraded';
     }
 
-    // Check admin bot
     health.checks.adminBot = {
       status: adminBot.isConfigured() ? 'ok' : 'not_configured'
     };
 
-    // Check memory usage
     const memUsage = process.memoryUsage();
     health.checks.memory = {
       status: memUsage.heapUsed < memUsage.heapTotal * 0.9 ? 'ok' : 'warning',
@@ -196,16 +191,12 @@ app.get('/api/health/detailed', async (req, res) => {
   }
 });
 
-// Serve admin panel at /admin
+// Serve admin panel
 app.get('/admin', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'admin-panel.html'));
 });
 
-// ============================================================
 // API ROUTES
-// ============================================================
-
-// SECURITY FIX: Add CSRF token generation endpoint
 app.get('/api/csrf-token', (req, res) => {
   const token = crypto.randomBytes(32).toString('hex');
   res.json({ csrfToken: token });
@@ -232,7 +223,6 @@ app.post('/api/upload',
     body('metadata')
       .isObject().withMessage('Metadata must be an object')
       .custom((value) => {
-        // SECURITY FIX: Validate metadata structure
         if (!value.hasOwnProperty('subfolders') || !value.hasOwnProperty('files')) {
           throw new Error('Invalid metadata structure');
         }
@@ -253,7 +243,6 @@ app.post('/api/upload',
 
       const { botToken, channelId, botUsername, metadata } = req.body;
 
-      // SECURITY FIX: Already validated by express-validator, but sanitize anyway
       const sanitizedToken = security.sanitizeInput(botToken);
       const sanitizedChannelId = security.sanitizeInput(channelId);
       const sanitizedUsername = security.sanitizeInput(botUsername);
@@ -265,7 +254,6 @@ app.post('/api/upload',
         });
       }
 
-      // Validate JSON metadata size
       const metadataSize = JSON.stringify(metadata).length;
       const maxSize = config.getMaxJsonSize();
       
@@ -276,7 +264,6 @@ app.post('/api/upload',
         });
       }
 
-      // Validate and sanitize JSON metadata
       const sanitizedMetadata = security.sanitizeJSON(metadata);
       if (!sanitizedMetadata) {
         await adminBot.sendAlert('security', `Malicious JSON detected from IP: ${req.ip}`);
@@ -286,7 +273,6 @@ app.post('/api/upload',
         });
       }
 
-      // Validate folder structure
       const folderValidation = security.validateFolderStructure(sanitizedMetadata);
       if (!folderValidation.valid) {
         return res.status(400).json({
@@ -296,7 +282,6 @@ app.post('/api/upload',
         });
       }
 
-      // Check if bot already exists
       const existingBot = storage.getBotByToken(sanitizedToken);
       const isUpdate = !!existingBot;
 
@@ -352,7 +337,6 @@ app.post('/api/upload',
       console.error('Upload error:', error);
       await adminBot.sendAlert('error', `Upload endpoint error: ${error.message}`);
       
-      // SECURITY FIX: Don't expose internal error details
       return res.status(500).json({
         success: false,
         error: 'Internal server error during upload'
@@ -366,7 +350,6 @@ app.get('/api/bot-status/:botToken', async (req, res) => {
   try {
     const botToken = security.sanitizeInput(req.params.botToken);
     
-    // SECURITY FIX: Validate token format
     if (!botToken || !security.isValidBotToken(botToken)) {
       return res.status(400).json({
         success: false,
@@ -401,12 +384,11 @@ app.get('/api/bot-status/:botToken', async (req, res) => {
   }
 });
 
-// Bot metadata endpoint (for update mode in uploader)
+// MAJOR FIX #6: Bot metadata endpoint with rate limiting
 app.get('/api/bot-metadata/:botToken', metadataLimiter, async (req, res) => {
   try {
     const botToken = security.sanitizeInput(req.params.botToken);
     
-    // SECURITY FIX: Validate token format
     if (!botToken || !security.isValidBotToken(botToken)) {
       return res.status(400).json({
         success: false,
@@ -423,7 +405,6 @@ app.get('/api/bot-metadata/:botToken', metadataLimiter, async (req, res) => {
       });
     }
 
-    // Return the full metadata for comparison
     return res.json({
       success: true,
       botId: bot.id,
@@ -442,16 +423,10 @@ app.get('/api/bot-metadata/:botToken', metadataLimiter, async (req, res) => {
   }
 });
 
-// ============================================================
-// ADMIN ROUTES (authenticated via admin-routes.js)
-// ============================================================
+// ADMIN ROUTES
 app.use('/api/admin', adminRoutes.getRouter());
 
-// ============================================================
 // ERROR HANDLING
-// ============================================================
-
-// 404 handler
 app.use((req, res) => {
   res.status(404).json({
     success: false,
@@ -459,11 +434,9 @@ app.use((req, res) => {
   });
 });
 
-// Global error handler
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);
   
-  // SECURITY FIX: Don't expose stack traces in production
   const isDevelopment = process.env.NODE_ENV !== 'production';
   
   adminBot.sendAlert('error', `Unhandled server error: ${err.message}`).catch(console.error);
@@ -475,15 +448,12 @@ app.use((err, req, res, next) => {
   });
 });
 
-// ============================================================
 // SERVER INITIALIZATION
-// ============================================================
 
-// SECURITY FIX: Environment validation before startup
+// MAJOR FIX #7: Environment validation before startup
 function validateEnvironment() {
   const errors = [];
   
-  // Check critical environment variables
   if (!process.env.ADMIN_USERNAME) {
     errors.push('ADMIN_USERNAME not set');
   }
@@ -494,7 +464,13 @@ function validateEnvironment() {
     errors.push('ADMIN_PASSWORD must be at least 12 characters');
   }
   
-  // SECURITY FIX: Check password complexity
+  // CRITICAL FIX #7: Validate PASSWORD_SALT
+  if (!process.env.PASSWORD_SALT) {
+    errors.push('PASSWORD_SALT not set (required for password hashing)');
+  } else if (process.env.PASSWORD_SALT.length < 32) {
+    errors.push('PASSWORD_SALT must be at least 32 characters');
+  }
+  
   if (process.env.ADMIN_PASSWORD && !/(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])/.test(process.env.ADMIN_PASSWORD)) {
     console.warn('⚠ WARNING: ADMIN_PASSWORD should contain uppercase, lowercase, number, and special character');
   }
@@ -519,7 +495,6 @@ let isShuttingDown = false;
 
 async function startServer() {
   try {
-    // Validate environment first
     validateEnvironment();
     
     await config.initialize();
@@ -540,10 +515,9 @@ async function startServer() {
       ).catch(console.error);
     });
 
-    // SECURITY FIX: Set server timeout
-    server.timeout = 120000; // 2 minutes
-    server.keepAliveTimeout = 65000; // 65 seconds
-    server.headersTimeout = 66000; // Slightly more than keepAliveTimeout
+    server.timeout = 120000;
+    server.keepAliveTimeout = 65000;
+    server.headersTimeout = 66000;
 
   } catch (error) {
     console.error('Failed to start server:', error);
@@ -551,38 +525,32 @@ async function startServer() {
   }
 }
 
-// Graceful shutdown
 async function gracefulShutdown(signal) {
   if (isShuttingDown) return;
   isShuttingDown = true;
 
   console.log(`\n⚠️  ${signal} received, initiating graceful shutdown...`);
   
-  // Stop accepting new requests
   if (server) {
     server.close(() => {
       console.log('✓ HTTP server closed');
     });
   }
 
-  // Set timeout for forced shutdown
   const forceTimeout = setTimeout(() => {
     console.error('❌ Forced shutdown due to timeout');
     process.exit(1);
-  }, 30000); // 30 seconds max
+  }, 30000);
 
   try {
-    // Save sessions
     if (adminRoutes && adminRoutes.saveSessions) {
       await adminRoutes.saveSessions();
       console.log('✓ Sessions saved');
     }
 
-    // Stop all bots gracefully
     await botManager.stopAllBots();
     console.log('✓ All bots stopped');
 
-    // Send final alert
     await adminBot.sendAlert('system', `Server shutting down (${signal})`);
     console.log('✓ Admin notification sent');
 
@@ -595,12 +563,10 @@ async function gracefulShutdown(signal) {
   }
 }
 
-// Graceful shutdown handlers
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
-process.on('SIGUSR2', () => gracefulShutdown('SIGUSR2')); // nodemon restart
+process.on('SIGUSR2', () => gracefulShutdown('SIGUSR2'));
 
-// Handle uncaught errors
 process.on('uncaughtException', (error) => {
   console.error('Uncaught Exception:', error);
   adminBot.sendAlert('error', `Uncaught exception: ${error.message}`).catch(console.error);
