@@ -1,7 +1,7 @@
 # Complete Deployment Guide
 ## Telegram Bot File Management System
 
-This guide will walk you through **every step** from a fresh computer to a fully running, secured server. Written for beginners with no Linux experience.
+This guide will walk you through **every step** from a fresh computer to a fully running, secured server.
 
 ---
 
@@ -14,11 +14,10 @@ This guide will walk you through **every step** from a fresh computer to a fully
 5. [Running Installation Scripts](#5-running-installation-scripts)
 6. [Domain & SSL Setup](#6-domain--ssl-setup)
 7. [Security Configuration](#7-security-configuration)
-8. [Network Isolation](#8-network-isolation)
-9. [Testing Everything](#9-testing-everything)
-10. [Configuring the Windows Uploader](#10-configuring-the-windows-uploader)
-11. [Daily Operations](#11-daily-operations)
-12. [Troubleshooting](#12-troubleshooting)
+8. [Testing Everything](#8-testing-everything)
+9. [Configuring the Windows Uploader](#9-configuring-the-windows-uploader)
+10. [Daily Operations](#10-daily-operations)
+11. [Troubleshooting](#11-troubleshooting)
 
 ---
 
@@ -33,8 +32,8 @@ This guide will walk you through **every step** from a fresh computer to a fully
 - [ ] USB drive (8GB+) for Linux installation
 
 ### Accounts & Services
-- [ ] Domain registered: `tgfiler.qzz.io` ✓ (you have this)
-- [ ] DNS configured at afraid.org ✓ (you have this)
+- [ ] Domain registered (e.g., `tgfiler.qzz.io`)
+- [ ] DNS configured at your provider
 - [ ] Telegram account for admin bot (optional but recommended)
 
 ### Files You Should Have
@@ -64,52 +63,25 @@ telegram-bot-system/
     └── (all uploader files)
 ```
 
-### Code Changes You Need to Make
+### Critical Pre-Deployment Configuration
 
-**IMPORTANT:** Before deploying, update these files:
+**IMPORTANT:** Before deploying, you MUST set these environment variables:
 
-#### 1. In `backend/server.js` - Verify the bot-metadata endpoint exists
+#### 1. Admin Credentials
+These will be set during installation interactively, but you should prepare:
+- Strong admin username (NOT "admin")
+- Strong password (minimum 12 characters, include uppercase, lowercase, numbers, special characters)
 
-After the `/api/bot-status/:botToken` endpoint, you should have:
+#### 2. Password Salt (CRITICAL)
+The system requires a `PASSWORD_SALT` environment variable for secure password hashing. This will be automatically generated during installation.
 
-```javascript
-// Bot metadata endpoint (for update mode in uploader)
-app.get('/api/bot-metadata/:botToken', async (req, res) => {
-  try {
-    const botToken = security.sanitizeInput(req.params.botToken);
-    const bot = storage.getBotByToken(botToken);
-
-    if (!bot) {
-      return res.status(404).json({
-        success: false,
-        error: 'Bot not found'
-      });
-    }
-
-    return res.json({
-      success: true,
-      botId: bot.id,
-      status: bot.status,
-      metadata: bot.metadata,
-      lastUpdate: bot.lastUpdate,
-      createdAt: bot.createdAt
-    });
-
-  } catch (error) {
-    console.error('Metadata fetch error:', error);
-    return res.status(500).json({
-      success: false,
-      error: 'Error fetching bot metadata'
-    });
-  }
-});
+#### 3. Server URL in Uploader
+Before building the Windows uploader for distribution, update `uploader/config.py`:
+```python
+SERVER_URL = "https://yourdomain.com"  # Change from localhost
 ```
 
-**You said you added this - good!**
-
-#### 2. No other code changes needed yet
-
-The admin credentials will be set during installation (not hardcoded in files).
+Then rebuild the executable with `.\build_uploader.ps1`
 
 ---
 
@@ -195,8 +167,6 @@ Type your username and press Enter, then your password (you won't see characters
 
 ## 3.2 Basic Linux Commands
 
-Here are the only commands you need to know:
-
 | Command | What it does |
 |---------|--------------|
 | `ls` | List files in current folder |
@@ -222,10 +192,6 @@ inet 192.168.1.100/24 ...
 
 **Write down this IP address!** (example: `192.168.1.100`)
 
-You'll use this to:
-1. Connect remotely from your Windows PC
-2. Point your domain to this server
-
 ## 3.4 Update the System
 
 Run these commands (one at a time):
@@ -236,7 +202,7 @@ sudo apt upgrade -y
 
 This updates all software. It might take 5-10 minutes.
 
-## 3.5 Connect from Windows (Optional but Recommended)
+## 3.5 Connect from Windows (Recommended)
 
 Working directly on the server is hard. Let's connect from your Windows PC:
 
@@ -298,8 +264,6 @@ Your server should now have:
 
 # 5. Running Installation Scripts
 
-Now we'll run the scripts that set everything up automatically.
-
 ## 5.1 Make Scripts Executable
 
 In your terminal (PuTTY), run:
@@ -316,19 +280,22 @@ sudo bash install.sh
 
 **The script will ask you:**
 
-1. **Domain name:** Enter `tgfiler.qzz.io`
-2. **Admin username:** Choose a username (e.g., `admin`)
+1. **Domain name:** Enter your domain (e.g., `tgfiler.qzz.io`)
+2. **Admin username:** Choose a username (NOT "admin" - use something unique)
 3. **Admin password:** Choose a STRONG password (minimum 12 characters)
+   - Must contain: uppercase, lowercase, numbers, special characters
+   - Example: `MyS3cur3P@ssw0rd!2024`
 
 **Write these credentials down! You need them to log into the admin panel.**
 
 The script will automatically:
-- Install Node.js
+- Install Node.js 20
 - Install Caddy (web server)
 - Configure firewall
 - Create service user
 - Set up directories
 - Configure HTTPS
+- Generate password salt automatically
 
 Wait for it to complete (5-15 minutes).
 
@@ -347,7 +314,13 @@ cd /opt/telegram-bot-system/backend
 sudo -u tgbot npm install
 ```
 
-Wait for packages to install.
+Wait for packages to install. This includes:
+- express (web server)
+- node-telegram-bot-api (Telegram bot library)
+- helmet (security)
+- express-rate-limit (DDoS protection)
+- express-validator (input validation)
+- proper-lockfile (file locking for race condition prevention)
 
 ## 5.5 Setup the Service
 
@@ -357,13 +330,22 @@ sudo bash /opt/telegram-bot-system/scripts/setup_service.sh
 
 This makes the app start automatically when server boots.
 
+**Expected output:**
+- Service file created
+- Log rotation configured
+- Service enabled for auto-start
+- Service started successfully
+
 ## 5.6 Setup Automated Tasks
 
 ```bash
 sudo bash /opt/telegram-bot-system/scripts/setup_cron.sh
 ```
 
-This sets up daily backups.
+This sets up:
+- Daily backups at 2:00 AM
+- Weekly service restart (Sunday 4:00 AM)
+- Monthly log cleanup
 
 ## 5.7 Run Security Hardening
 
@@ -371,7 +353,12 @@ This sets up daily backups.
 sudo bash /opt/telegram-bot-system/scripts/security_hardening.sh
 ```
 
-This applies additional security measures.
+This applies:
+- SSH hardening
+- Kernel security parameters
+- Enhanced Fail2Ban rules
+- Automatic security updates
+- File permission lockdown
 
 ---
 
@@ -381,19 +368,12 @@ This applies additional security measures.
 
 Your domain flow:
 ```
-User → tgfiler.qzz.io → afraid.org DNS → Your Server IP → Caddy → Node.js App
+User → yourdomain.com → DNS → Your Server IP → Caddy → Node.js App
 ```
 
 **Caddy automatically handles SSL/HTTPS** - no manual certificate setup needed!
 
-## 6.2 Configure DNS at afraid.org
-
-1. Log into https://freedns.afraid.org/
-2. Go to your domain: `tgfiler.qzz.io`
-3. Add/Edit an **A Record**:
-   - Type: `A`
-   - Subdomain: leave blank (or `@`)
-   - Destination: Your server's **public** IP
+## 6.2 Configure DNS
 
 ### Finding Your Public IP
 
@@ -406,32 +386,45 @@ This shows your PUBLIC IP (different from the 192.168.x.x local IP).
 
 **Example:**
 - Public IP: `203.0.113.50`
-- Set this in afraid.org
+
+### Configure DNS Records
+
+At your DNS provider (afraid.org, Cloudflare, etc.):
+
+1. Add an **A Record**:
+   - Type: `A`
+   - Name: `@` (or leave blank for root domain)
+   - Value: Your public IP (e.g., `203.0.113.50`)
+   - TTL: Default (or 3600)
+
+2. Optionally add **CNAME** for www:
+   - Type: `CNAME`
+   - Name: `www`
+   - Value: `yourdomain.com`
 
 ### Wait for DNS Propagation
 
-DNS changes can take 5 minutes to 24 hours to work worldwide.
+DNS changes can take 5 minutes to 24 hours.
 
 Test if it's working:
 ```bash
-ping tgfiler.qzz.io
+ping yourdomain.com
 ```
 
 If you see your server's IP responding, DNS is working!
 
 ## 6.3 Port Forwarding on Your Router
 
-Since your server is at home behind a router, you need to forward ports:
+**If your server is at home behind a router:**
 
 1. **Find your router's admin page:**
    - Usually `192.168.1.1` or `192.168.0.1`
-   - Try typing it in a web browser
-   - Log in (check router for default password, often on a sticker)
+   - Type it in a web browser
+   - Log in (check router for default password)
 
 2. **Find "Port Forwarding" section:**
    - Might be under: Advanced → NAT → Port Forwarding
    - Or: Security → Port Forwarding
-   - Or: Gaming/Applications
 
 3. **Add these rules:**
 
@@ -450,7 +443,7 @@ Since your server is at home behind a router, you need to forward ports:
 After DNS propagates and ports are forwarded:
 
 ```bash
-curl -I https://tgfiler.qzz.io/health
+curl -I https://yourdomain.com/health
 ```
 
 You should see:
@@ -475,6 +468,7 @@ The installation scripts already set up:
 | SSH Hardening | Limits login attempts |
 | Kernel Security | Network attack protections |
 | Auto Updates | Security patches install automatically |
+| Password Salt | Secure password hashing with cryptographic salt |
 
 ## 7.2 Check Firewall Status
 
@@ -539,65 +533,13 @@ sudo ufw reload
 sudo systemctl restart sshd
 ```
 
-**Important:** Before closing current session, test the new port works!
-
-```bash
-ssh -p 2222 admin@your-server-ip
-```
+**Important:** Test the new port works before closing current session!
 
 ---
 
-# 8. Network Isolation
+# 8. Testing Everything
 
-## 8.1 Why Isolate?
-
-Your server handles internet traffic. You don't want a compromised server to access your other home devices (computers, smart TVs, phones).
-
-## 8.2 Option A: Router VLAN/Guest Network (Best)
-
-Many routers support VLANs or Guest Networks:
-
-1. Create a separate VLAN or Guest Network for your server
-2. Connect server to that network
-3. Disable "access to local network" for that VLAN/Guest
-
-This completely isolates the server from your home devices.
-
-## 8.3 Option B: Server Firewall Rules (Good)
-
-If your router doesn't support VLANs, add rules on the server:
-
-```bash
-# Block server from accessing local network (except router)
-sudo iptables -A OUTPUT -d 192.168.1.0/24 -j DROP
-sudo iptables -I OUTPUT -d 192.168.1.1 -j ACCEPT  # Allow router
-sudo iptables -A INPUT -s 192.168.1.0/24 -j DROP
-sudo iptables -I INPUT -s 192.168.1.1 -j ACCEPT   # Allow router
-
-# Save rules
-sudo apt install iptables-persistent -y
-sudo netfilter-persistent save
-```
-
-**Note:** Replace `192.168.1.0/24` with your actual network range.
-
-## 8.4 Option C: Separate Router (Best Security)
-
-If budget allows, buy a cheap second router:
-
-```
-Internet → Main Router → Second Router → Server
-                      ↓
-                Your home devices
-```
-
-This physically separates networks.
-
----
-
-# 9. Testing Everything
-
-## 9.1 Run Health Check
+## 8.1 Run Health Check
 
 ```bash
 sudo bash /opt/telegram-bot-system/scripts/health_check.sh
@@ -605,7 +547,7 @@ sudo bash /opt/telegram-bot-system/scripts/health_check.sh
 
 All items should show green checkmarks (✓).
 
-## 9.2 Test Backend API
+## 8.2 Test Backend API
 
 From your server:
 ```bash
@@ -617,11 +559,11 @@ Expected response:
 {"status":"ok","timestamp":"..."}
 ```
 
-## 9.3 Test HTTPS Access
+## 8.3 Test HTTPS Access
 
 From any browser, go to:
 ```
-https://tgfiler.qzz.io/health
+https://yourdomain.com/health
 ```
 
 Should show:
@@ -629,27 +571,28 @@ Should show:
 {"status":"ok","timestamp":"..."}
 ```
 
-## 9.4 Test Admin Panel
+## 8.4 Test Admin Panel
 
 From any browser, go to:
 ```
-https://tgfiler.qzz.io/admin
+https://yourdomain.com/admin
 ```
 
 You should see the login page.
 
 Log in with the credentials you set during installation.
 
-## 9.5 Test Admin Panel Functions
+## 8.5 Test Admin Panel Functions
 
 After logging in, verify:
 
-- [ ] Dashboard shows (even if stats are 0)
+- [ ] Dashboard shows (stats will be 0 initially)
 - [ ] Bot Management page loads
 - [ ] Settings page loads
 - [ ] Can save settings
+- [ ] CSRF tokens work (no "Invalid CSRF token" errors)
 
-## 9.6 Check Service Status
+## 8.6 Check Service Status
 
 ```bash
 sudo systemctl status tgbot
@@ -657,35 +600,75 @@ sudo systemctl status tgbot
 
 Should show `active (running)`.
 
-## 9.7 Check Logs
+## 8.7 Check Logs
 
 ```bash
 # Application logs
 tail -f /opt/telegram-bot-system/logs/app.log
 
+# Systemd service logs
+sudo journalctl -u tgbot -f
+
 # Caddy (web server) logs
-tail -f /var/log/caddy/access.log
+sudo tail -f /var/log/caddy/access.log
 ```
 
 Press `Ctrl+C` to stop viewing logs.
 
+## 8.8 Test Bot Creation
+
+Create a test bot via API:
+
+```bash
+curl -X POST https://yourdomain.com/api/upload \
+  -H "Content-Type: application/json" \
+  -d '{
+    "botToken": "YOUR_TEST_BOT_TOKEN",
+    "channelId": "@test_channel",
+    "botUsername": "@testbot",
+    "metadata": {
+      "subfolders": {
+        "Test": {
+          "files": [],
+          "subfolders": {}
+        }
+      },
+      "files": []
+    }
+  }'
+```
+
+Expected response:
+```json
+{
+  "success": true,
+  "message": "Bot created successfully. Awaiting admin approval.",
+  "botId": "...",
+  "status": "pending"
+}
+```
+
+Verify in admin panel:
+1. Refresh dashboard
+2. Should show: 1 Total Bot, 1 Pending
+
 ---
 
-# 10. Configuring the Windows Uploader
+# 9. Configuring the Windows Uploader
 
-## 10.1 Update Server URL
+## 9.1 Update Server URL
 
-Now that your server is running, update the uploader:
+**CRITICAL:** Before distributing the uploader to users, update the server URL:
 
 1. Open `uploader/config.py`
-2. Change line 8:
+2. Change:
 ```python
-SERVER_URL = "https://tgfiler.qzz.io"
+SERVER_URL = "https://yourdomain.com"  # Change from localhost!
 ```
 
 3. Save the file
 
-## 10.2 Rebuild the Executable
+## 9.2 Rebuild the Executable
 
 Open PowerShell in the uploader folder:
 ```powershell
@@ -694,13 +677,15 @@ Open PowerShell in the uploader folder:
 
 This creates a new `FileUploader_v1.0.0.exe` that connects to your server.
 
-## 10.3 Distribute to Users
+**Important:** Every time you change the server URL or update the uploader code, you must rebuild the executable.
+
+## 9.3 Distribute to Users
 
 Give users:
 1. The `FileUploader_v1.0.0.exe`
-2. The `QUICKSTART.md` guide (rename to `README.txt`)
+2. The `uploader/uploader-quickstart.md` guide (rename to `README.txt`)
 
-## 10.4 Test Upload
+## 9.4 Test Upload
 
 1. Run the new FileUploader.exe
 2. Create a test folder with a few small files
@@ -710,7 +695,7 @@ Give users:
 6. Click "Start Upload"
 7. Should complete successfully!
 
-## 10.5 Verify on Server
+## 9.5 Verify on Server
 
 After upload, check:
 
@@ -720,9 +705,9 @@ After upload, check:
 
 ---
 
-# 11. Daily Operations
+# 10. Daily Operations
 
-## 11.1 Common Commands
+## 10.1 Common Commands
 
 | Task | Command |
 |------|---------|
@@ -735,14 +720,14 @@ After upload, check:
 | Health check | `sudo bash /opt/telegram-bot-system/scripts/health_check.sh` |
 | Manual backup | `sudo bash /opt/telegram-bot-system/scripts/backup.sh` |
 
-## 11.2 Approving Bots
+## 10.2 Approving Bots
 
-1. Go to `https://tgfiler.qzz.io/admin`
+1. Go to `https://yourdomain.com/admin`
 2. Log in
 3. Click "Bot Management"
 4. Click "Approve" on pending bots
 
-## 11.3 Banning Users
+## 10.3 Banning Users
 
 1. Admin panel → Bot Management
 2. Find the bot
@@ -750,7 +735,7 @@ After upload, check:
 4. Enter reason
 5. All user's bots will be disconnected
 
-## 11.4 Checking Backups
+## 10.4 Checking Backups
 
 Backups run automatically at 2:00 AM daily.
 
@@ -764,7 +749,7 @@ To manually backup:
 sudo bash /opt/telegram-bot-system/scripts/backup.sh
 ```
 
-## 11.5 Updating the Application
+## 10.5 Updating the Application
 
 If you need to update code:
 
@@ -774,12 +759,17 @@ If you need to update code:
 sudo cp -r ~/telegram-bot-system/backend/* /opt/telegram-bot-system/backend/
 sudo chown -R tgbot:tgbot /opt/telegram-bot-system/
 ```
-3. Restart service:
+3. Install any new dependencies:
+```bash
+cd /opt/telegram-bot-system/backend
+sudo -u tgbot npm install
+```
+4. Restart service:
 ```bash
 sudo systemctl restart tgbot
 ```
 
-## 11.6 Server Reboot
+## 10.6 Server Reboot
 
 The app automatically starts on reboot. To manually reboot:
 ```bash
@@ -793,7 +783,7 @@ sudo systemctl status tgbot
 
 ---
 
-# 12. Troubleshooting
+# 11. Troubleshooting
 
 ## Problem: Can't Access Admin Panel
 
@@ -809,7 +799,7 @@ sudo systemctl status caddy
 
 **Check 3:** DNS working?
 ```bash
-ping tgfiler.qzz.io
+ping yourdomain.com
 ```
 
 **Check 4:** Firewall allowing traffic?
@@ -862,15 +852,15 @@ cat /opt/telegram-bot-system/logs/error.log
 ```
 
 Common causes:
+- Missing environment variables: Check `/opt/telegram-bot-system/.env`
 - Missing node_modules: `cd /opt/telegram-bot-system/backend && npm install`
 - Permission issues: `sudo chown -R tgbot:tgbot /opt/telegram-bot-system/`
-- Environment file missing: Check `/opt/telegram-bot-system/.env` exists
 
 ## Problem: Uploader Can't Connect
 
 **Check 1:** Server is accessible externally
 ```bash
-curl https://tgfiler.qzz.io/health
+curl https://yourdomain.com/health
 ```
 
 **Check 2:** Uploader config.py has correct URL
@@ -893,7 +883,7 @@ df -h
 
 Clean old backups:
 ```bash
-sudo find /opt/telegram-bot-system/data/backups -name "*.tar.gz" -mtime +7 -delete
+sudo find /opt/telegram-bot-system/data/backups -name "backup_*.tar.gz" -mtime +7 -delete
 ```
 
 Clean old logs:
@@ -901,13 +891,21 @@ Clean old logs:
 sudo find /opt/telegram-bot-system/logs -name "*.log" -mtime +30 -delete
 ```
 
+## Problem: "Invalid CSRF token" in Admin Panel
+
+This is a security feature. If you see this:
+
+1. Log out and log back in to get a new session
+2. Make sure you're using the latest admin panel code
+3. Check that cookies are enabled in your browser
+
 ---
 
 # Quick Reference Card
 
 ## Important URLs
-- Admin Panel: `https://tgfiler.qzz.io/admin`
-- Health Check: `https://tgfiler.qzz.io/health`
+- Admin Panel: `https://yourdomain.com/admin`
+- Health Check: `https://yourdomain.com/health`
 
 ## Important Paths
 - App Directory: `/opt/telegram-bot-system/`
