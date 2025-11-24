@@ -1,4 +1,4 @@
-// bot-manager.js - Manages Multiple Telegram Bots (ERROR HANDLING FIXES)
+// bot-manager.js - Manages Multiple Telegram Bots (PRODUCTION-READY - ALL FIXES APPLIED)
 const TelegramBot = require('node-telegram-bot-api');
 const Security = require('./security');
 
@@ -11,22 +11,39 @@ class BotManager {
     this.bots = new Map(); // botId -> bot instance
     this.botTokenMap = new Map(); // token -> botId
     
-    // SECURITY FIX: Add circuit breaker for failing bots
+    // CRITICAL FIX #5: Add circuit breaker for failing bots with persistence
     this.circuitBreakers = new Map(); // botId -> { failures, lastFailure, state }
     this.CIRCUIT_BREAKER_THRESHOLD = 5;
     this.CIRCUIT_BREAKER_TIMEOUT = 300000; // 5 minutes
+    this.circuitBreakerFile = null; // Will be set in loadAllBots
     
     // Recovery monitoring
     this.recoveryInterval = null;
     
-    // SECURITY FIX: Limit error tracking to prevent memory leaks
+    // CRITICAL FIX #1: Limit error tracking to prevent memory leaks
     this.MAX_ERROR_HISTORY = 10;
+    
+    // MINOR FIX #10: Structured logging
+    this.logger = {
+      error: (msg, ...args) => console.error(`[BotManager] ${msg}`, ...args),
+      warn: (msg, ...args) => console.warn(`[BotManager] ${msg}`, ...args),
+      info: (msg, ...args) => console.log(`[BotManager] ${msg}`, ...args)
+    };
   }
 
   async loadAllBots() {
     try {
       const allBots = this.storage.getAllBots();
-      console.log(`Loading ${allBots.length} bots...`);
+      this.logger.info(`Loading ${allBots.length} bots...`);
+
+      // CRITICAL FIX #5: Set circuit breaker file path
+      const path = require('path');
+      this.circuitBreakerFile = path.join(
+        __dirname, '..', 'data', 'config', 'circuit_breakers.json'
+      );
+      
+      // Load circuit breaker state
+      await this.loadCircuitBreakerState();
 
       for (const botData of allBots) {
         if (botData.status !== 'banned' && botData.status !== 'disconnected') {
@@ -41,21 +58,58 @@ class BotManager {
         }
       }
 
-      console.log(`✓ Loaded ${this.bots.size} active bots`);
+      this.logger.info(`✓ Loaded ${this.bots.size} active bots`);
       
       // Start recovery monitor
       this.startRecoveryMonitor();
       
-      // SECURITY FIX: Start circuit breaker cleanup
+      // CRITICAL FIX #5: Start circuit breaker cleanup and persistence
       this.startCircuitBreakerCleanup();
       
     } catch (error) {
-      console.error('Error loading bots:', error);
+      this.logger.error('Error loading bots:', error);
       throw error;
     }
   }
 
-  // SECURITY FIX: Check circuit breaker before starting bot
+  // CRITICAL FIX #5: Load circuit breaker state from disk
+  async loadCircuitBreakerState() {
+    try {
+      const fs = require('fs').promises;
+      const data = await fs.readFile(this.circuitBreakerFile, 'utf8');
+      const saved = JSON.parse(data);
+      
+      for (const [botId, breaker] of Object.entries(saved)) {
+        this.circuitBreakers.set(botId, breaker);
+      }
+      
+      this.logger.info(`✓ Loaded circuit breaker state for ${this.circuitBreakers.size} bots`);
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        this.logger.warn('Could not load circuit breaker state:', error.message);
+      }
+    }
+  }
+
+  // CRITICAL FIX #5: Save circuit breaker state to disk
+  async saveCircuitBreakerState() {
+    try {
+      const fs = require('fs').promises;
+      const state = {};
+      
+      for (const [botId, breaker] of this.circuitBreakers.entries()) {
+        state[botId] = breaker;
+      }
+      
+      const tempFile = `${this.circuitBreakerFile}.tmp`;
+      await fs.writeFile(tempFile, JSON.stringify(state, null, 2));
+      await fs.rename(tempFile, this.circuitBreakerFile);
+    } catch (error) {
+      this.logger.error('Error saving circuit breaker state:', error);
+    }
+  }
+
+  // CRITICAL FIX #5: Check circuit breaker before starting bot
   isCircuitBreakerOpen(botId) {
     const breaker = this.circuitBreakers.get(botId);
     if (!breaker) return false;
@@ -65,6 +119,7 @@ class BotManager {
       if (Date.now() - breaker.lastFailure > this.CIRCUIT_BREAKER_TIMEOUT) {
         breaker.state = 'half-open';
         breaker.failures = 0;
+        this.saveCircuitBreakerState(); // Persist state change
         return false;
       }
       return true;
@@ -85,11 +140,14 @@ class BotManager {
     
     if (breaker.failures >= this.CIRCUIT_BREAKER_THRESHOLD) {
       breaker.state = 'open';
-      console.error(`Circuit breaker opened for bot ${botId} after ${breaker.failures} failures`);
+      this.logger.error(`Circuit breaker opened for bot ${botId} after ${breaker.failures} failures`);
       this.adminBot.sendAlert('error', 
         `Bot ${botId} circuit breaker opened due to repeated failures`
-      ).catch(console.error);
+      ).catch(err => this.logger.error('Failed to send alert:', err));
     }
+    
+    // CRITICAL FIX #5: Persist state after failure
+    this.saveCircuitBreakerState();
   }
 
   recordBotSuccess(botId) {
@@ -97,27 +155,38 @@ class BotManager {
     if (breaker && breaker.state === 'half-open') {
       breaker.state = 'closed';
       breaker.failures = 0;
-      console.log(`Circuit breaker closed for bot ${botId}`);
+      this.logger.info(`Circuit breaker closed for bot ${botId}`);
+      
+      // CRITICAL FIX #5: Persist state after success
+      this.saveCircuitBreakerState();
     }
   }
 
   startCircuitBreakerCleanup() {
     setInterval(() => {
       const now = Date.now();
+      let cleaned = false;
+      
       for (const [botId, breaker] of this.circuitBreakers.entries()) {
         // Remove old circuit breaker data
         if (now - breaker.lastFailure > this.CIRCUIT_BREAKER_TIMEOUT * 2) {
           this.circuitBreakers.delete(botId);
+          cleaned = true;
         }
+      }
+      
+      // CRITICAL FIX #5: Persist state if anything was cleaned
+      if (cleaned) {
+        this.saveCircuitBreakerState();
       }
     }, 600000); // Clean every 10 minutes
   }
 
   async addBot(botId, token, channelId, metadata, status = 'pending', ownerId = null) {
     try {
-      // SECURITY FIX: Check circuit breaker
+      // CRITICAL FIX #5: Check circuit breaker
       if (this.isCircuitBreakerOpen(botId)) {
-        console.warn(`Cannot start bot ${botId}: circuit breaker is open`);
+        this.logger.warn(`Cannot start bot ${botId}: circuit breaker is open`);
         return null;
       }
 
@@ -151,7 +220,7 @@ class BotManager {
         status,
         ownerId,
         started: new Date().toISOString(),
-        errors: [], // SECURITY FIX: Limited error history
+        errors: [], // CRITICAL FIX #1: Limited error history
         lastHealthCheck: Date.now()
       };
 
@@ -161,11 +230,11 @@ class BotManager {
       // Setup handlers with error isolation
       this.setupBotHandlers(botInfo);
 
-      console.log(`✓ Bot ${botId} initialized (status: ${status})`);
+      this.logger.info(`✓ Bot ${botId} initialized (status: ${status})`);
       return botId;
 
     } catch (error) {
-      console.error(`❌ Error adding bot ${botId}:`, error);
+      this.logger.error(`❌ Error adding bot ${botId}:`, error);
       this.recordBotFailure(botId);
       await this.adminBot.sendAlert('error', `Failed to initialize bot ${botId}: ${error.message}`);
       return null;
@@ -176,11 +245,11 @@ class BotManager {
     const { instance: bot, botId, channelId, metadata, status, ownerId } = botInfo;
     const adminUserId = this.config.getAdminUserId();
 
-    // SECURITY FIX: Global error handler with proper error isolation
+    // CRITICAL FIX #1: Global error handler with proper error isolation
     bot.on('polling_error', (error) => {
-      console.error(`Polling error for bot ${botId}:`, error);
+      this.logger.error(`Polling error for bot ${botId}:`, error);
       
-      // SECURITY FIX: Limit error history
+      // CRITICAL FIX #1: Limit error history
       if (!botInfo.errors) botInfo.errors = [];
       botInfo.errors.push({
         timestamp: new Date().toISOString(),
@@ -197,22 +266,22 @@ class BotManager {
       
       // If too many errors, stop bot
       if (botInfo.errors.length >= this.MAX_ERROR_HISTORY) {
-        console.error(`Bot ${botId} has too many errors, stopping...`);
-        this.stopBot(botId).catch(console.error);
+        this.logger.error(`Bot ${botId} has too many errors, stopping...`);
+        this.stopBot(botId).catch(err => this.logger.error('Error stopping bot:', err));
         this.adminBot.sendAlert('error', 
           `Bot ${botId} stopped due to repeated errors`
-        ).catch(console.error);
+        ).catch(err => this.logger.error('Failed to send alert:', err));
       }
     });
 
-    // SECURITY FIX: Wrap all handlers in try-catch
+    // CRITICAL FIX #1: Wrap all handlers in try-catch
     const safeHandler = (handler) => {
       return async (...args) => {
         try {
           await handler(...args);
           this.recordBotSuccess(botId);
         } catch (error) {
-          console.error(`Handler error for bot ${botId}:`, error);
+          this.logger.error(`Handler error for bot ${botId}:`, error);
           this.recordBotFailure(botId);
           // Don't rethrow - isolate error
         }
@@ -276,7 +345,7 @@ class BotManager {
         return;
       }
 
-      // SECURITY FIX: Limit text length
+      // CRITICAL FIX #1: Limit text length
       if (text.length > 4096) {
         await bot.sendMessage(chatId, 'Message too long. Please use shorter messages.');
         return;
@@ -320,7 +389,7 @@ class BotManager {
         return;
       }
 
-      // SECURITY FIX: Limit callback data length
+      // CRITICAL FIX #1: Limit callback data length
       if (sanitizedData.length > 256) {
         await bot.answerCallbackQuery(query.id, { text: 'Request too long' });
         return;
@@ -390,7 +459,7 @@ class BotManager {
               file.messageId
             );
           } catch (error) {
-            console.error(`Error forwarding file:`, error);
+            this.logger.error(`Error forwarding file:`, error);
           }
         }
       }
@@ -463,11 +532,11 @@ class BotManager {
       });
 
     } catch (error) {
-      console.error('Error sending folder menu:', error);
+      this.logger.error('Error sending folder menu:', error);
       try {
         await bot.sendMessage(chatId, '❌ Error loading folder menu.');
       } catch (e) {
-        console.error('Failed to send error message:', e);
+        this.logger.error('Failed to send error message:', e);
       }
     }
   }
@@ -479,7 +548,7 @@ class BotManager {
         throw new Error('Bot not found');
       }
 
-      // SECURITY FIX: Limit message length
+      // CRITICAL FIX #1: Limit message length
       const sanitizedMessage = this.security.sanitizeInput(message);
       if (!sanitizedMessage || sanitizedMessage.length > 4096) {
         throw new Error('Invalid or too long message');
@@ -491,7 +560,7 @@ class BotManager {
 
       return true;
     } catch (error) {
-      console.error(`Error sending admin message:`, error);
+      this.logger.error(`Error sending admin message:`, error);
       throw error;
     }
   }
@@ -517,7 +586,7 @@ class BotManager {
           this.recordBotSuccess(botId);
           
         } catch (error) {
-          console.error(`Bot ${botId} health check failed:`, error);
+          this.logger.error(`Bot ${botId} health check failed:`, error);
           this.recordBotFailure(botId);
           
           // Track failure
@@ -535,7 +604,7 @@ class BotManager {
 
           // If failed multiple times and not in circuit breaker, attempt restart
           if (botInfo.errors.length >= 3 && !this.isCircuitBreakerOpen(botId)) {
-            console.log(`Attempting to restart bot ${botId}...`);
+            this.logger.info(`Attempting to restart bot ${botId}...`);
             
             try {
               await this.stopBot(botId);
@@ -556,7 +625,7 @@ class BotManager {
                 );
               }
             } catch (restartError) {
-              console.error(`Failed to restart bot ${botId}:`, restartError);
+              this.logger.error(`Failed to restart bot ${botId}:`, restartError);
               await this.adminBot.sendAlert('error',
                 `Failed to auto-restart bot ${botId}: ${restartError.message}`
               );
@@ -573,11 +642,11 @@ class BotManager {
       try {
         await botInfo.instance.stopPolling();
       } catch (error) {
-        console.error(`Error stopping bot ${botId}:`, error);
+        this.logger.error(`Error stopping bot ${botId}:`, error);
       }
       this.bots.delete(botId);
       this.botTokenMap.delete(botInfo.token);
-      console.log(`✓ Bot ${botId} stopped`);
+      this.logger.info(`✓ Bot ${botId} stopped`);
     }
   }
 
@@ -587,17 +656,20 @@ class BotManager {
       clearInterval(this.recoveryInterval);
     }
     
-    console.log('Stopping all bots...');
+    // CRITICAL FIX #5: Save circuit breaker state before shutdown
+    await this.saveCircuitBreakerState();
+    
+    this.logger.info('Stopping all bots...');
     for (const [botId, botInfo] of this.bots.entries()) {
       try {
         await botInfo.instance.stopPolling();
       } catch (error) {
-        console.error(`Error stopping bot ${botId}:`, error);
+        this.logger.error(`Error stopping bot ${botId}:`, error);
       }
     }
     this.bots.clear();
     this.botTokenMap.clear();
-    console.log('✓ All bots stopped');
+    this.logger.info('✓ All bots stopped');
   }
 
   getActiveBotCount() {
