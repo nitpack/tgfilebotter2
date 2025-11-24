@@ -23,6 +23,12 @@ log() {
 
 log "========== Starting backup =========="
 
+# Check dependencies
+if ! command -v jq &> /dev/null; then
+    log "✗ ERROR: jq is not installed. Install with: sudo apt install jq"
+    exit 1
+fi
+
 # FIXED: Verify source directories exist
 if [ ! -d "$DATA_DIR" ]; then
     log "✗ ERROR: Data directory not found: $DATA_DIR"
