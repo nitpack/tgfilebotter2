@@ -96,7 +96,8 @@ The installer will ask for:
 
 3. **Copy backend files:**
 ```bash
-sudo cp -r ../backend/* /opt/telegram-bot-system/backend/
+sudo cp -r ~/telegram-bot-system/backend/* /opt/telegram-bot-system/backend/
+sudo cp -r ~/telegram-bot-system/scripts/* /opt/telegram-bot-system/scripts/
 cd /opt/telegram-bot-system/backend
 sudo -u tgbot npm install
 ```
@@ -324,6 +325,13 @@ telegram-bot-system/
 - **Storage:** 10GB minimum (metadata only, no large files)
 - **Bandwidth:** 1TB/month minimum
 
+### Scaling Recommendations
+- **Under 500 bots:** Current JSON storage works well
+- **500-1000 bots:** Consider PostgreSQL/SQLite migration
+- **1000+ bots:** Definitely use database + Redis sessions
+- **5000+ bots:** Add load balancer + multiple instances
+See [MAINTENANCE_GUIDE.md](docs/MAINTENANCE_GUIDE.md) for detailed scaling information.
+
 ---
 
 ## 🧪 Testing
@@ -397,6 +405,17 @@ GET /api/bot-status/:botToken
 GET /api/bot-metadata/:botToken
 ```
 
+**Response:**
+```json
+{
+  "success": true,
+  "botId": "abc123",
+  "status": "approved",
+  "metadata": { /* full structure */ },
+  "lastUpdate": "2024-01-02T00:00:00Z"
+}
+```
+
 ### Admin Endpoints
 
 All require `Authorization: Bearer {token}` header.
@@ -439,9 +458,9 @@ npm test
 
 ---
 
-## 🐛 Known Issues & Limitations
+## 🚨 Known Issues & Limitations
 
-1. **Session Storage** - In-memory (lost on restart)
+1. **Session Storage** - In-memory (lost on restart, partially fixed with persistence)
 2. **Single Admin** - Only one admin account supported
 3. **Windows Only Uploader** - Linux/Mac versions not yet available
 4. **JSON Storage** - Limits to ~500 bots comfortably
@@ -449,23 +468,29 @@ npm test
 
 See [Issues](https://github.com/nitpacker/tgfilebotter/issues) for planned improvements.
 
+### Recently Fixed:
+- ✅ Race conditions in file operations (proper-lockfile added)
+- ✅ Circuit breakers for failing bots
+- ✅ CSRF protection in admin panel
+- ✅ Password salt security requirement enforced
+- ✅ Bot status update atomicity
+- ✅ Session cleanup and persistence
 ---
 
 ## 🗺️ Roadmap
 
-### Version 1.1 (Next Release)
+### Version 1.1 (Planned)
 - [ ] Multi-admin support with role-based access
-- [ ] PostgreSQL/SQLite database option
+- [ ] PostgreSQL/SQLite database option (recommended for 500+ bots)
 - [ ] Bot analytics dashboard
 - [ ] Email notifications
-- [ ] Docker deployment option
+- [ ] Webhook mode (instead of polling)
 
 ### Version 1.2
 - [ ] Linux/Mac uploader versions
 - [ ] Mobile uploader (Android/iOS)
 - [ ] Bot templates/presets
 - [ ] User dashboard for bot owners
-- [ ] Webhook mode (instead of polling)
 
 ### Version 2.0
 - [ ] Multi-language support
